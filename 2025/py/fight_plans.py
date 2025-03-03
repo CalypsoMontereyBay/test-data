@@ -11,6 +11,9 @@ from shapely.ops import nearest_points
 from geopy.distance import geodesic
 
 from matplotlib import pyplot as plt
+from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
+from mpl_toolkits.axes_grid1.inset_locator import mark_inset
+
 import cartopy.crs as ccrs
 from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
 import cartopy.feature as cfeature
@@ -144,16 +147,18 @@ def get_bearing(lat1,lon1,lat2,lon2):
     if brng < 0: brng+= 360
     return brng
 
+insight = Point(parse_dms('-121d50m41.22s', 'W'), parse_dms('36d54m29.35s','N'))
+
 def plot_flight_plan(wps, outfile:str, projection:str='platecarree',
                      closest_shore=None, lon_lim=None, lat_lim=None):
 
-    if lon_lim is None:
-        hbox = 0.25
-        lon_lim = wps[0].x - hbox, wps[0].x + hbox
-        lat_lim = wps[0].y - hbox, wps[0].y + hbox
+    hbox_in = 0.035
+    hbox_out = 0.25
 
-    fig = plt.figure(figsize=(9,9))
-    plt.clf()
+    def set_lims(wp, hbox):
+        lon_lim = wp.x - hbox, wp.x + hbox
+        lat_lim = wp.y - hbox, wp.y + hbox
+        return lon_lim, lat_lim
 
     tformM = ccrs.Mollweide()
     tformP = ccrs.PlateCarree()
@@ -163,21 +168,30 @@ def plot_flight_plan(wps, outfile:str, projection:str='platecarree',
     elif projection == 'platecarree':
         tform = tformP
 
-    ax = plt.axes(projection=tform)
+
+    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8),
+        subplot_kw={'projection': tform})
 
     # Points
     wps_gdf = geopandas.GeoDataFrame(geometry=wps, crs="EPSG:4326")
-    wps_gdf.plot(ax=ax, marker='o', color='red', markersize=10, transform=tform)
+    wps_gdf.plot(ax=ax1, marker='o', color='red', markersize=10, transform=tform,
+                 label='Waypoints')
+
     if closest_shore is not None:
         closest_point_gdf = geopandas.GeoDataFrame(geometry=[closest_shore], crs="EPSG:4326")
-        closest_point_gdf.plot(ax=ax, marker='^', color='b', markersize=10, transform=tform)
+        closest_point_gdf.plot(ax=ax1, marker='^', color='b', markersize=10, transform=tform,
+                               label='Closest shore')
 
+    # Insight
+    insight_gdf = geopandas.GeoDataFrame(geometry=[insight], crs="EPSG:4326")
+    insight_gdf.plot(ax=ax1, marker='s', color='k', markersize=10, transform=tform,
+                     label='Insight', zorder=10)
 
     # Use the full resolution GSHHS data
     land = GSHHSFeature(scale='f', levels=[1])  # 'f' is for full resolution
-    ax.add_feature(land, facecolor='lightgray')
+    ax1.add_feature(land, facecolor='lightgray')
 
-    gl = ax.gridlines(crs=ccrs.PlateCarree(), linewidth=1, 
+    gl = ax1.gridlines(crs=ccrs.PlateCarree(), linewidth=1, 
         color='black', alpha=0.5, linestyle=':', draw_labels=True)
     gl.xlabels_top = False
     gl.ylabels_left = True
@@ -188,9 +202,24 @@ def plot_flight_plan(wps, outfile:str, projection:str='platecarree',
     gl.xlabel_style = {'color': 'black'}# 'weight': 'bold'}
     gl.ylabel_style = {'color': 'black'}# 'weight': 'bold'}
 
-    # Limits
-    ax.set_xlim(lon_lim)
-    ax.set_ylim(lat_lim)
+    # Zoom out
+    lon_lim, lat_lim = set_lims(wps[0], hbox_out)
+    ax1.set_xlim(lon_lim)
+    ax1.set_ylim(lat_lim)
+
+    # Zoom in
+    wps_gdf.plot(ax=ax2, marker='o', color='red', markersize=5, transform=tform,
+                 label='Waypoints')
+    insight_gdf.plot(ax=ax2, marker='s', color='k', markersize=10, transform=tform,
+                     label='Insight', zorder=10)
+    ax2.add_feature(land, facecolor='lightgray')
+
+    lon_lim, lat_lim = set_lims(wps[0], hbox_in)
+    ax2.set_xlim(lon_lim)
+    ax2.set_ylim(lat_lim)
+
+    ax2.legend()
+
 
     # Finish
     plt.tight_layout()
@@ -199,9 +228,19 @@ def plot_flight_plan(wps, outfile:str, projection:str='platecarree',
 
 
 
-    #plt.show()
+def trunc_heading(heading):
+    """
+    Truncate heading to 0-360 degrees
+    """
+    while heading < 0:
+        heading += 360
+    while heading >= 360:
+        heading -= 360
+    return heading
 
-def flightA():
+
+def flightA(line_size=2., off_line=70e-3, plot:bool=False):
+
     wp1 = Point(parse_dms('-121d50m52.7s', 'W'), parse_dms('36d53m28.77s','N'))
 
     wps = [wp1]
@@ -209,15 +248,45 @@ def flightA():
     closest_point_on_coastline = closest_shoreline(wp1)
     heading_to_shore = get_bearing(wp1.y, wp1.x, closest_point_on_coastline.y, closest_point_on_coastline.x)
 
-    first_heading = heading_to_shore - 90.
-    if first_heading < 0: first_heading += 360.
+    along_heading = heading_to_shore - 90.
+    along_heading = trunc_heading(along_heading)
+    back_heading = trunc_heading(along_heading + 180)
 
-    wps.append(get_destination_point(wp1, first_heading, 2.))
+    wps.append(get_destination_point(wp1, along_heading, 2.))
+
+    # Next line, 70m off-shore
+    off_heading = trunc_heading(heading_to_shore+180)
+
+    wps.append(get_destination_point(wps[-1], off_heading, off_line))
+    wps.append(get_destination_point(wps[-1], back_heading, line_size))
+
+    # Next lines
+    nlines = int(np.round(line_size/off_line))
+    along = True
+    for i in range(nlines-2):
+        wps.append(get_destination_point(wps[-1], off_heading, off_line))
+        if along:
+            wps.append(get_destination_point(wps[-1], along_heading, line_size))
+        else:
+            wps.append(get_destination_point(wps[-1], back_heading, line_size))
+        along = not along
+
 
     # Show
-    plot_flight_plan(wps, 'flightA.png', closest_shore=closest_point_on_coastline)
+    if plot:
+        plot_flight_plan(wps, 'flightA.png', closest_shore=closest_point_on_coastline)
+
+    wps_gdf = geopandas.GeoDataFrame(geometry=wps, crs="EPSG:4326")
+    # Write to file
+    wps_gdf.to_file('flightA.shp')
+
+    # Write to KML
+    wps_gdf.to_file('flightA.kml', driver='KML')
+
+    # Write to CSV
+    wps_gdf.to_csv('flightA.csv')
 
 
 # Command line execution
 if __name__ == '__main__':
-    flightA()
+    flightA(plot=False)
