@@ -103,6 +103,6 @@ if __name__ == '__main__':
     specim_wp['flight_line'] = flight_lines    
 
     # Do it
-    embed(header='106 of 2025/py/flight-line-kml.py')
+    #embed(header='106 of 2025/py/flight-line-kml.py')
     create_kml_from_dataframe(specim_wp, flight_folder_name='FlightA',
                               output_file='flightA.kml')
