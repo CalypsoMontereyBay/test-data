@@ -283,8 +283,11 @@ def flightA(line_size=2., off_line=70e-3, plot:bool=False):
     # Write to KML
     wps_gdf.to_file('flightA.kml', driver='KML')
 
-    # Write to CSV
-    wps_gdf.to_csv('flightA.csv')
+    # Write to CSV as lat lon
+    wps_gdf['lon'] = wps_gdf.geometry.x
+    wps_gdf['lat'] = wps_gdf.geometry.y
+    wps_gdf['Waypoint'] = [f'WP{i:03d}' for i in np.arange(len(wps_gdf))]
+    wps_gdf[['WP', 'lon', 'lat']].to_csv('flightA.csv', index=False)
 
 
 # Command line execution
