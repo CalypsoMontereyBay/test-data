@@ -1,6 +1,7 @@
 import pandas as pd
 import simplekml
 import numpy as np
+import pandas
 
 # Sample data - replace this with your actual DataFrame
 # This example creates 3 flight lines with 5 points each
@@ -33,8 +34,11 @@ def create_sample_data():
     # Combine all flight lines into one dataframe
     return pd.concat(flight_lines, ignore_index=True)
 
-def create_kml_from_dataframe(df, output_file='flight_lines.kml', flight_line_col='flight_line', 
-                              lat_col='latitude', lon_col='longitude'):
+def create_kml_from_dataframe(df, output_file='flight_lines.kml', 
+                              flight_line_col='flight_line', 
+                              flight_folder_name='Flight Lines',
+                              lat_col='latitude', 
+                              lon_col='longitude'):
     """
     Create a KML file with flight lines from a pandas DataFrame.
     
@@ -55,7 +59,7 @@ def create_kml_from_dataframe(df, output_file='flight_lines.kml', flight_line_co
     kml = simplekml.Kml()
     
     # Create a folder for all flight lines
-    flight_folder = kml.newfolder(name="Flight Lines")
+    flight_folder = kml.newfolder(name=flight_folder_name)
     
     # Get unique flight lines
     flight_lines = df[flight_line_col].unique()
@@ -66,7 +70,7 @@ def create_kml_from_dataframe(df, output_file='flight_lines.kml', flight_line_co
         line_data = df[df[flight_line_col] == line_id].sort_values('point_num')
         
         # Create a new line string
-        line = flight_folder.newlinestring(name=f"Flight Line {line_id}")
+        line = flight_folder.newlinestring(name=f"FL{line_id}")
         
         # Add coordinates to the line
         coords = [(row[lon_col], row[lat_col]) for _, row in line_data.iterrows()]
@@ -107,3 +111,40 @@ kml_file = create_kml_from_dataframe(df, output_file='flight_lines.kml')
 #     lat_col='your_latitude_column', 
 #     lon_col='your_longitude_column'
 # )
+
+def waypoint_to_df(waypoint_file:str):
+
+    wp = pandas.read_table(
+        waypoint_file, skiprows=1,
+        names=['sequence', 'current_waypoint', 'coordinate_frame', 'command', 'param1', 'param2',
+               'param3','param4','latitude','longitude','altitude','autocontinue'])
+
+    # Specim only
+    good_rows = np.zeros(len(wp), dtype=bool)
+    for ss, row in wp.iterrows():
+        # 206
+        if row.command == 206:
+            good_rows[ss-1] = True
+            sv_last = ss-1
+    # Trim the last one
+    good_rows[sv_last] = False
+    specim_wp = wp[good_rows].copy()
+
+    # Return
+    return specim_wp
+
+
+# Command line execution
+if __name__ == '__main__':
+    import sys
+
+    # Load waypoint file
+    ifile = sys.argv[1]
+    specim_wp = waypoint_to_df(ifile)
+
+    # Add flight lines
+    flight_lines = []
+    for ss in range(len(specim_wp)//2):
+        flight_lines.append(ss+1)
+        flight_lines.append(ss+1)
+    specim_wp['flight_line'] = flight_lines    
