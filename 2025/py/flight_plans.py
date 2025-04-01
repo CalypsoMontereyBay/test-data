@@ -239,7 +239,41 @@ def trunc_heading(heading):
     return heading
 
 
-def flightA(line_size=2., off_line=70e-3, plot:bool=False):
+def flight_plan(grid_width:float=2., off_line:float=70e-3, plot: bool = False,
+            line_length:float=2., plan_name:str='flightA'):
+    """
+    Generates a flight plan based on a starting waypoint and specified parameters.
+
+    This function calculates a series of waypoints for a flight plan, starting from
+    a given point and extending along a specified heading. The waypoints are 
+    generated to create a grid-like pattern, with lines spaced at a given offset 
+    from the shoreline. The resulting waypoints can be visualized, saved to 
+    shapefiles, KML files, and CSV files.
+
+    Args:
+        grid_width (float, optional): The total width of the grid in kilometers.
+        line_length (float, optional): The length of each flight line in kilometers. 
+            Defaults to 2.0.
+        off_line (float, optional): The distance between adjacent flight lines in 
+            kilometers. Defaults to 70e-3 (70 meters).
+        plot (bool, optional): If True, generates a plot of the flight plan and 
+            saves it as 'flightA.png'. Defaults to False.
+
+    Outputs:
+        - A shapefile ('flightA.shp') containing the waypoints.
+        - A KML file ('flightA.kml') containing the waypoints.
+        - A CSV file ('flightA.csv') containing the waypoints in latitude and 
+            longitude format.
+
+    Notes:
+        - The function uses the starting waypoint `wp1` and calculates the 
+            closest point on the coastline to determine the heading.
+        - The flight plan alternates between along-heading and back-heading 
+            directions to create a zigzag pattern.
+        - The function requires external dependencies such as `geopandas`, 
+            `numpy`, and custom helper functions like `parse_dms`, `closest_shoreline`, 
+            `get_bearing`, `trunc_heading`, and `get_destination_point`.
+    """
 
     wp1 = Point(parse_dms('-121d50m52.7s', 'W'), parse_dms('36d53m28.77s','N'))
 
@@ -258,38 +292,43 @@ def flightA(line_size=2., off_line=70e-3, plot:bool=False):
     off_heading = trunc_heading(heading_to_shore+180)
 
     wps.append(get_destination_point(wps[-1], off_heading, off_line))
-    wps.append(get_destination_point(wps[-1], back_heading, line_size))
+    wps.append(get_destination_point(wps[-1], back_heading, line_length))
 
     # Next lines
-    nlines = int(np.round(line_size/off_line))
+    nlines = int(np.round(grid_width/off_line))
     along = True
     for i in range(nlines-2):
         wps.append(get_destination_point(wps[-1], off_heading, off_line))
         if along:
-            wps.append(get_destination_point(wps[-1], along_heading, line_size))
+            wps.append(get_destination_point(wps[-1], along_heading, line_length))
         else:
-            wps.append(get_destination_point(wps[-1], back_heading, line_size))
+            wps.append(get_destination_point(wps[-1], back_heading, line_length))
         along = not along
 
 
     # Show
     if plot:
-        plot_flight_plan(wps, 'flightA.png', closest_shore=closest_point_on_coastline)
+        plot_flight_plan(wps, f'{plan_name}.png', closest_shore=closest_point_on_coastline)
 
     wps_gdf = geopandas.GeoDataFrame(geometry=wps, crs="EPSG:4326")
     # Write to file
-    wps_gdf.to_file('flightA.shp')
+    wps_gdf.to_file(f'{plan_name}.shp')
 
     # Write to KML
-    wps_gdf.to_file('flightA.kml', driver='KML')
+    wps_gdf.to_file(f'{plan_name}.kml', driver='KML')
 
     # Write to CSV as lat lon
     wps_gdf['lon'] = wps_gdf.geometry.x
     wps_gdf['lat'] = wps_gdf.geometry.y
     wps_gdf['Waypoint'] = [f'WP{i:03d}' for i in np.arange(len(wps_gdf))]
-    wps_gdf[['WP', 'lon', 'lat']].to_csv('flightA.csv', index=False)
+    wps_gdf[['Waypoint', 'lon', 'lat']].to_csv(f'{plan_name}.csv', index=False)
 
 
 # Command line execution
 if __name__ == '__main__':
-    flightA(plot=False)
+
+    # Generate flight plan A for 2025-03-07 Specim flight
+    #flight_plan(plot=False)
+
+    # Generate flight plan for Blacksmith
+    flight_plan(grid_width=10., line_length=10., plot=True, plan_name='blacksmith')
