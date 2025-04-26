@@ -93,6 +93,7 @@ if __name__ == '__main__':
 
     # Load waypoint file
     ifile = sys.argv[1]
+    outfile = sys.argv[2]
     specim_wp = waypoint_to_df(ifile)
 
     # Add flight lines
@@ -105,4 +106,5 @@ if __name__ == '__main__':
     # Do it
     #embed(header='106 of 2025/py/flight-line-kml.py')
     create_kml_from_dataframe(specim_wp, flight_folder_name='FlightA',
-                              output_file='flightA.kml')
+                              output_file=outfile)
+    print(f'Wrote {outfile}')
