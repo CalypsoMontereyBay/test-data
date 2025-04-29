@@ -2,7 +2,6 @@
 # imports
 import geopandas
 from pyproj import Geod
-import re
 import math
 import numpy as np
 
@@ -20,36 +19,16 @@ import cartopy.feature as cfeature
 from cartopy.feature import GSHHSFeature
 import cartopy.io.shapereader as shpreader
 
+from flight_utils import parse_dms
+
+m1_mooring = Point(-122.020, 36.750)
+insight = Point(parse_dms('-121d50m41.22s', 'W'), parse_dms('36d54m29.35s','N'))
+# Create Shapely Point for M1 Mooring
+# Coordinates: 36.750N, 122.020W (in decimal degrees)
+# Note: For longitude, west is negative in decimal degrees
 
 
-def parse_dms(dms_str, direction:str):
-    """
-    Parse coordinates in the format "36d53m28.77s"
-    Returns the decimal degree equivalent
-    """
-    sign = 1
-    if direction in ['S', 'W']:
-        sign = -1
-        if direction == 'W':
-            dms_str = dms_str[1:]
-    # Extract degrees, minutes, and seconds using regex
-    pattern = r'(\d+)d(\d+)m(\d+(?:\.\d+)?)s'
-    match = re.match(pattern, dms_str)
-    
-    if match:
-        degrees = int(match.group(1))
-        minutes = int(match.group(2))
-        seconds = float(match.group(3))
-        
-        # Convert to decimal degrees
-        decimal = degrees + minutes/60 + seconds/3600
-        
-        # Note: This function doesn't handle negative coordinates
-        # You'll need to specify direction (N/S/E/W) separately or use sign
-        
-        return sign*decimal
-    else:
-        raise ValueError(f"Could not parse DMS string: {dms_str}")
+
 
 def closest_shoreline(my_point, coastline=None, verbose:bool=True):
 
@@ -147,10 +126,11 @@ def get_bearing(lat1,lon1,lat2,lon2):
     if brng < 0: brng+= 360
     return brng
 
-insight = Point(parse_dms('-121d50m41.22s', 'W'), parse_dms('36d54m29.35s','N'))
 
 def plot_flight_plan(wps, outfile:str, projection:str='platecarree',
-                     closest_shore=None, lon_lim=None, lat_lim=None):
+                     closest_shore=None, lon_lim=None, lat_lim=None,
+                     big_only:bool=False, show_closest:bool=False,
+                     show_M1:bool=False):
 
     hbox_in = 0.035
     hbox_out = 0.25
@@ -163,21 +143,26 @@ def plot_flight_plan(wps, outfile:str, projection:str='platecarree',
     tformM = ccrs.Mollweide()
     tformP = ccrs.PlateCarree()
 
+    tform = None
     if projection == 'mollweide':
         tform = tformM
     elif projection == 'platecarree':
         tform = tformP
 
 
-    fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8),
-        subplot_kw={'projection': tform})
+    if not big_only:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8),
+            subplot_kw={'projection': tform})
+    else:
+        fig = plt.figure(figsize=(10, 10))
+        ax1 = plt.subplot(1, 1, 1, projection=tform)
 
     # Points
     wps_gdf = geopandas.GeoDataFrame(geometry=wps, crs="EPSG:4326")
     wps_gdf.plot(ax=ax1, marker='o', color='red', markersize=10, transform=tform,
                  label='Waypoints')
 
-    if closest_shore is not None:
+    if closest_shore is not None and show_closest:
         closest_point_gdf = geopandas.GeoDataFrame(geometry=[closest_shore], crs="EPSG:4326")
         closest_point_gdf.plot(ax=ax1, marker='^', color='b', markersize=10, transform=tform,
                                label='Closest shore')
@@ -185,7 +170,13 @@ def plot_flight_plan(wps, outfile:str, projection:str='platecarree',
     # Insight
     insight_gdf = geopandas.GeoDataFrame(geometry=[insight], crs="EPSG:4326")
     insight_gdf.plot(ax=ax1, marker='s', color='k', markersize=10, transform=tform,
-                     label='Insight', zorder=10)
+                     label='Insight Solutions', zorder=10)
+
+    # M1 Mooring
+    if show_M1:
+        m1_gdf = geopandas.GeoDataFrame(geometry=[m1_mooring], crs="EPSG:4326")
+        m1_gdf.plot(ax=ax1, marker='*', color='b', markersize=10, transform=tform,
+                    label='M1 Mooring', zorder=10)
 
     # Use the full resolution GSHHS data
     land = GSHHSFeature(scale='f', levels=[1])  # 'f' is for full resolution
@@ -201,24 +192,32 @@ def plot_flight_plan(wps, outfile:str, projection:str='platecarree',
     gl.yformatter = LATITUDE_FORMATTER
     gl.xlabel_style = {'color': 'black'}# 'weight': 'bold'}
     gl.ylabel_style = {'color': 'black'}# 'weight': 'bold'}
+    fsz = 15.
+    gl.xlabel_style = {'size': fsz}
+    gl.ylabel_style = {'size': fsz}
 
     # Zoom out
-    lon_lim, lat_lim = set_lims(wps[0], hbox_out)
+    if lon_lim is None or lat_lim is None:
+        lon_lim, lat_lim = set_lims(wps[0], hbox_out)
+        print('lon, lat: ', lon_lim, lat_lim)
     ax1.set_xlim(lon_lim)
     ax1.set_ylim(lat_lim)
 
+    ax1.legend(fontsize=15, loc='upper right')
+
     # Zoom in
-    wps_gdf.plot(ax=ax2, marker='o', color='red', markersize=5, transform=tform,
-                 label='Waypoints')
-    insight_gdf.plot(ax=ax2, marker='s', color='k', markersize=10, transform=tform,
-                     label='Insight', zorder=10)
-    ax2.add_feature(land, facecolor='lightgray')
+    if not big_only:
+        wps_gdf.plot(ax=ax2, marker='o', color='red', markersize=5, transform=tform,
+                    label='Waypoints')
+        insight_gdf.plot(ax=ax2, marker='s', color='k', markersize=10, transform=tform,
+                        label='Insight', zorder=10)
+        ax2.add_feature(land, facecolor='lightgray')
 
-    lon_lim, lat_lim = set_lims(wps[0], hbox_in)
-    ax2.set_xlim(lon_lim)
-    ax2.set_ylim(lat_lim)
+        lon_lim, lat_lim = set_lims(wps[0], hbox_in)
+        ax2.set_xlim(lon_lim)
+        ax2.set_ylim(lat_lim)
 
-    ax2.legend()
+        ax2.legend()
 
 
     # Finish
@@ -239,8 +238,13 @@ def trunc_heading(heading):
     return heading
 
 
-def flight_plan(grid_width:float=2., off_line:float=70e-3, plot: bool = False,
-            line_length:float=2., plan_name:str='flightA'):
+def flight_plan(grid_width:float=2., off_line:float=70e-3, 
+                plot: bool = False, line_length:float=2., 
+                plan_name:str='flightA',
+                along_heading:float=None,
+                wp1:Point=None,
+                skip_wp1:bool=False,
+                **kwargs):
     """
     Generates a flight plan based on a starting waypoint and specified parameters.
 
@@ -252,12 +256,23 @@ def flight_plan(grid_width:float=2., off_line:float=70e-3, plot: bool = False,
 
     Args:
         grid_width (float, optional): The total width of the grid in kilometers.
+            The number of lines is calculated based on this width and the
+            off_line parameter. Defaults to 2.0.
         line_length (float, optional): The length of each flight line in kilometers. 
             Defaults to 2.0.
         off_line (float, optional): The distance between adjacent flight lines in 
             kilometers. Defaults to 70e-3 (70 meters).
         plot (bool, optional): If True, generates a plot of the flight plan and 
             saves it as 'flightA.png'. Defaults to False.
+        wp1 (Point, optional): The starting waypoint as a shapely Point object.
+            If None, a default point is used. Defaults to None.
+        plan_name (str, optional): The name of the flight plan. This will be used
+            to name the output files. Defaults to 'flightA'.
+        along_heading (float, optional): The heading of the flight plan in degrees.
+            If None, the heading is calculated based on the closest point on the 
+            coastline. Defaults to None.
+        skip_wp1 (bool, optional): If True, the first waypoint is skipped in the
+        **kwargs : Additional keyword arguments to be passed to the plotting function.
 
     Outputs:
         - A shapefile ('flightA.shp') containing the waypoints.
@@ -275,18 +290,31 @@ def flight_plan(grid_width:float=2., off_line:float=70e-3, plot: bool = False,
             `get_bearing`, `trunc_heading`, and `get_destination_point`.
     """
 
-    wp1 = Point(parse_dms('-121d50m52.7s', 'W'), parse_dms('36d53m28.77s','N'))
+    # First waypoint
+    if wp1 is None:
+        wp1 = Point(parse_dms('-121d50m52.7s', 'W'), 
+                parse_dms('36d53m28.77s','N'))
 
-    wps = [wp1]
-
+    # Find the heading to the closest point on the coastline
     closest_point_on_coastline = closest_shoreline(wp1)
     heading_to_shore = get_bearing(wp1.y, wp1.x, closest_point_on_coastline.y, closest_point_on_coastline.x)
 
-    along_heading = heading_to_shore - 90.
-    along_heading = trunc_heading(along_heading)
+    # Offset?
+
+    if along_heading is None:
+        along_heading = heading_to_shore - 90.
+        along_heading = trunc_heading(along_heading)
+    else:
+        heading_to_shore = along_heading + 90.
+        heading_to_shore = trunc_heading(heading_to_shore) 
     back_heading = trunc_heading(along_heading + 180)
 
-    wps.append(get_destination_point(wp1, along_heading, 2.))
+    print(f"Heading to shore: {heading_to_shore:.2f} degrees")
+    print(f"Along heading: {along_heading:.2f} degrees")
+
+    wps = [wp1] if not skip_wp1 else []
+
+    wps.append(get_destination_point(wp1, along_heading, line_length/2.))
 
     # Next line, 70m off-shore
     off_heading = trunc_heading(heading_to_shore+180)
@@ -308,7 +336,9 @@ def flight_plan(grid_width:float=2., off_line:float=70e-3, plot: bool = False,
 
     # Show
     if plot:
-        plot_flight_plan(wps, f'{plan_name}.png', closest_shore=closest_point_on_coastline)
+        plot_flight_plan(wps, f'{plan_name}.png', 
+                         closest_shore=closest_point_on_coastline,
+                         **kwargs)
 
     wps_gdf = geopandas.GeoDataFrame(geometry=wps, crs="EPSG:4326")
     # Write to file
@@ -323,12 +353,29 @@ def flight_plan(grid_width:float=2., off_line:float=70e-3, plot: bool = False,
     wps_gdf['Waypoint'] = [f'WP{i:03d}' for i in np.arange(len(wps_gdf))]
     wps_gdf[['Waypoint', 'lon', 'lat']].to_csv(f'{plan_name}.csv', index=False)
 
+def main(flg:int):
+
+
+    if flg == 0:
+        # Generate flight plan for Specim flight
+        flight_plan(plot=True)
+    elif flg == 1:
+        # Generate flight plan for Black Swift
+        flight_plan(grid_width=10., line_length=10., plot=True, plan_name='blacksmith')
+    elif flg == 2:  
+        # Generate flight plan for Simons proposal
+        flight_plan(grid_width=30., line_length=18., plot=True,  off_line=1.,
+                    plan_name='simons', along_heading=144.+180,
+                    skip_wp1=True, show_M1=True,
+                    big_only=True, lon_lim=(-122.2, -121.5), 
+                    lat_lim=(36.5, 37.05))
 
 # Command line execution
 if __name__ == '__main__':
+    import sys
 
-    # Generate flight plan A for 2025-03-07 Specim flight
-    #flight_plan(plot=False)
-
-    # Generate flight plan for Blacksmith
-    flight_plan(grid_width=10., line_length=10., plot=True, plan_name='blacksmith')
+    if len(sys.argv) > 1:
+        flg = int(sys.argv[1])
+    else:
+        flg = 0
+    main(flg)
