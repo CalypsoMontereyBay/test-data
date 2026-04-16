@@ -1,0 +1,381 @@
+
+# imports
+import geopandas
+from pyproj import Geod
+import math
+import numpy as np
+
+from shapely.geometry import Point, box
+from shapely.ops import nearest_points
+from geopy.distance import geodesic
+
+from matplotlib import pyplot as plt
+from mpl_toolkits.axes_grid1.inset_locator import zoomed_inset_axes
+from mpl_toolkits.axes_grid1.inset_locator import mark_inset
+
+import cartopy.crs as ccrs
+from cartopy.mpl.gridliner import LONGITUDE_FORMATTER, LATITUDE_FORMATTER
+import cartopy.feature as cfeature
+from cartopy.feature import GSHHSFeature
+import cartopy.io.shapereader as shpreader
+
+from flight_utils import parse_dms
+
+m1_mooring = Point(-122.020, 36.750)
+insight = Point(parse_dms('-121d50m41.22s', 'W'), parse_dms('36d54m29.35s','N'))
+# Create Shapely Point for M1 Mooring
+# Coordinates: 36.750N, 122.020W (in decimal degrees)
+# Note: For longitude, west is negative in decimal degrees
+
+
+
+
+def closest_shoreline(my_point, coastline=None, verbose:bool=True):
+
+    buffer_degrees = 1.0
+    bbox = box(
+        my_point.x - buffer_degrees,
+        my_point.y - buffer_degrees,
+        my_point.x + buffer_degrees,
+        my_point.y + buffer_degrees
+)
+    if coastline is None:
+        reader = shpreader.Reader(shpreader.gshhs(scale='h'))
+        coastline = geopandas.GeoDataFrame(geometry=list(reader.geometries()), crs="EPSG:4326")
+        coastline = coastline[coastline.intersects(bbox)]
+
+    # Calculate distances from point to filtered coastlines
+    if len(coastline) > 0:
+        # For polygons (like in naturalearth_lowres)
+        if 'geometry' in coastline.columns:
+            coastline['distance'] = coastline.geometry.apply(
+                lambda geom: geom.distance(my_point)
+            )
+            closest_feature = coastline.loc[coastline['distance'].idxmin()]
+            closest_point_on_coastline = nearest_points(my_point, closest_feature.geometry)[1]
+        
+        # For linestrings (like in GSHHS high-res)
+        else:
+            min_distance = float('inf')
+            closest_point_on_coastline = None
+            
+            for geom in coastline.geometry:
+                dist = geom.distance(my_point)
+                if dist < min_distance:
+                    min_distance = dist
+                    closest_point_on_coastline = nearest_points(my_point, geom)[1]
+        
+        if verbose:
+            print(f"Closest point on coastline: {closest_point_on_coastline}")
+        '''
+        # Get coordinates
+        closest_lon = closest_point_on_coastline.x
+        closest_lat = closest_point_on_coastline.y
+        
+        
+        # Calculate distance in kilometers
+        distance_km = geodesic(
+            (my_point.y, my_point.x), 
+            (closest_lat, closest_lon)
+        ).kilometers
+        
+        if verbose:
+            print(f"Distance to coastline: {distance_km:.2f} km")
+        
+        # Create a GeoDataFrame with the closest point for visualization
+        closest_point_gdf = geopandas.GeoDataFrame(
+            geometry=[closest_point_on_coastline], 
+            crs="EPSG:4326"
+        )
+        return closest_point_gdf
+        '''
+        return closest_point_on_coastline
+    else:
+        raise ValueError("No coastline found in the buffer area")
+
+def get_destination_point(wp_start, bearing, distance_km):
+    """
+    Calculate a new point given a starting point, bearing and distance.
+    
+    Parameters:
+    start_lon, start_lat: coordinates of starting point in decimal degrees
+    bearing: heading in degrees (0-360, clockwise from North)
+    distance_km: distance in kilometers
+    
+    Returns:
+    (lon, lat) tuple of the destination point
+    """
+    start_lon, start_lat = wp_start.x, wp_start.y
+    # Initialize the ellipsoid
+    g = Geod(ellps='WGS84')
+    
+    # Convert distance to meters for the calculation
+    distance_m = distance_km * 1000
+    
+    # Calculate the new point
+    # fwd returns: longitude, latitude, back azimuth
+    lon2, lat2, _ = g.fwd(start_lon, start_lat, bearing, distance_m)
+    
+    return Point(lon2, lat2)
+
+def get_bearing(lat1,lon1,lat2,lon2):
+    dLon = lon2 - lon1;
+    y = math.sin(dLon) * math.cos(lat2);
+    x = math.cos(lat1)*math.sin(lat2) - math.sin(lat1)*math.cos(lat2)*math.cos(dLon);
+    brng = np.rad2deg(math.atan2(y, x));
+    if brng < 0: brng+= 360
+    return brng
+
+
+def plot_flight_plan(wps, outfile:str, projection:str='platecarree',
+                     closest_shore=None, lon_lim=None, lat_lim=None,
+                     big_only:bool=False, show_closest:bool=False,
+                     show_M1:bool=False):
+
+    hbox_in = 0.035
+    hbox_out = 0.25
+
+    def set_lims(wp, hbox):
+        lon_lim = wp.x - hbox, wp.x + hbox
+        lat_lim = wp.y - hbox, wp.y + hbox
+        return lon_lim, lat_lim
+
+    tformM = ccrs.Mollweide()
+    tformP = ccrs.PlateCarree()
+
+    tform = None
+    if projection == 'mollweide':
+        tform = tformM
+    elif projection == 'platecarree':
+        tform = tformP
+
+
+    if not big_only:
+        fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 8),
+            subplot_kw={'projection': tform})
+    else:
+        fig = plt.figure(figsize=(10, 10))
+        ax1 = plt.subplot(1, 1, 1, projection=tform)
+
+    # Points
+    wps_gdf = geopandas.GeoDataFrame(geometry=wps, crs="EPSG:4326")
+    wps_gdf.plot(ax=ax1, marker='o', color='red', markersize=10, transform=tform,
+                 label='Waypoints')
+
+    if closest_shore is not None and show_closest:
+        closest_point_gdf = geopandas.GeoDataFrame(geometry=[closest_shore], crs="EPSG:4326")
+        closest_point_gdf.plot(ax=ax1, marker='^', color='b', markersize=10, transform=tform,
+                               label='Closest shore')
+
+    # Insight
+    insight_gdf = geopandas.GeoDataFrame(geometry=[insight], crs="EPSG:4326")
+    insight_gdf.plot(ax=ax1, marker='s', color='k', markersize=10, transform=tform,
+                     label='Insight Solutions', zorder=10)
+
+    # M1 Mooring
+    if show_M1:
+        m1_gdf = geopandas.GeoDataFrame(geometry=[m1_mooring], crs="EPSG:4326")
+        m1_gdf.plot(ax=ax1, marker='*', color='b', markersize=10, transform=tform,
+                    label='M1 Mooring', zorder=10)
+
+    # Use the full resolution GSHHS data
+    land = GSHHSFeature(scale='f', levels=[1])  # 'f' is for full resolution
+    ax1.add_feature(land, facecolor='lightgray')
+
+    gl = ax1.gridlines(crs=ccrs.PlateCarree(), linewidth=1, 
+        color='black', alpha=0.5, linestyle=':', draw_labels=True)
+    gl.xlabels_top = False
+    gl.ylabels_left = True
+    gl.ylabels_right=False
+    gl.xlines = True
+    gl.xformatter = LONGITUDE_FORMATTER
+    gl.yformatter = LATITUDE_FORMATTER
+    gl.xlabel_style = {'color': 'black'}# 'weight': 'bold'}
+    gl.ylabel_style = {'color': 'black'}# 'weight': 'bold'}
+    fsz = 15.
+    gl.xlabel_style = {'size': fsz}
+    gl.ylabel_style = {'size': fsz}
+
+    # Zoom out
+    if lon_lim is None or lat_lim is None:
+        lon_lim, lat_lim = set_lims(wps[0], hbox_out)
+        print('lon, lat: ', lon_lim, lat_lim)
+    ax1.set_xlim(lon_lim)
+    ax1.set_ylim(lat_lim)
+
+    ax1.legend(fontsize=15, loc='upper right')
+
+    # Zoom in
+    if not big_only:
+        wps_gdf.plot(ax=ax2, marker='o', color='red', markersize=5, transform=tform,
+                    label='Waypoints')
+        insight_gdf.plot(ax=ax2, marker='s', color='k', markersize=10, transform=tform,
+                        label='Insight', zorder=10)
+        ax2.add_feature(land, facecolor='lightgray')
+
+        lon_lim, lat_lim = set_lims(wps[0], hbox_in)
+        ax2.set_xlim(lon_lim)
+        ax2.set_ylim(lat_lim)
+
+        ax2.legend()
+
+
+    # Finish
+    plt.tight_layout()
+    plt.savefig(outfile, dpi=300)
+    print(f"Saved {outfile}")
+
+
+
+def trunc_heading(heading):
+    """
+    Truncate heading to 0-360 degrees
+    """
+    while heading < 0:
+        heading += 360
+    while heading >= 360:
+        heading -= 360
+    return heading
+
+
+def flight_plan(grid_width:float=2., off_line:float=70e-3, 
+                plot: bool = False, line_length:float=2., 
+                plan_name:str='flightA',
+                along_heading:float=None,
+                wp1:Point=None,
+                skip_wp1:bool=False,
+                **kwargs):
+    """
+    Generates a flight plan based on a starting waypoint and specified parameters.
+
+    This function calculates a series of waypoints for a flight plan, starting from
+    a given point and extending along a specified heading. The waypoints are 
+    generated to create a grid-like pattern, with lines spaced at a given offset 
+    from the shoreline. The resulting waypoints can be visualized, saved to 
+    shapefiles, KML files, and CSV files.
+
+    Args:
+        grid_width (float, optional): The total width of the grid in kilometers.
+            The number of lines is calculated based on this width and the
+            off_line parameter. Defaults to 2.0.
+        line_length (float, optional): The length of each flight line in kilometers. 
+            Defaults to 2.0.
+        off_line (float, optional): The distance between adjacent flight lines in 
+            kilometers. Defaults to 70e-3 (70 meters).
+        plot (bool, optional): If True, generates a plot of the flight plan and 
+            saves it as 'flightA.png'. Defaults to False.
+        wp1 (Point, optional): The starting waypoint as a shapely Point object.
+            If None, a default point is used. Defaults to None.
+        plan_name (str, optional): The name of the flight plan. This will be used
+            to name the output files. Defaults to 'flightA'.
+        along_heading (float, optional): The heading of the flight plan in degrees.
+            If None, the heading is calculated based on the closest point on the 
+            coastline. Defaults to None.
+        skip_wp1 (bool, optional): If True, the first waypoint is skipped in the
+        **kwargs : Additional keyword arguments to be passed to the plotting function.
+
+    Outputs:
+        - A shapefile ('flightA.shp') containing the waypoints.
+        - A KML file ('flightA.kml') containing the waypoints.
+        - A CSV file ('flightA.csv') containing the waypoints in latitude and 
+            longitude format.
+
+    Notes:
+        - The function uses the starting waypoint `wp1` and calculates the 
+            closest point on the coastline to determine the heading.
+        - The flight plan alternates between along-heading and back-heading 
+            directions to create a zigzag pattern.
+        - The function requires external dependencies such as `geopandas`, 
+            `numpy`, and custom helper functions like `parse_dms`, `closest_shoreline`, 
+            `get_bearing`, `trunc_heading`, and `get_destination_point`.
+    """
+
+    # First waypoint
+    if wp1 is None:
+        wp1 = Point(parse_dms('-121d50m52.7s', 'W'), 
+                parse_dms('36d53m28.77s','N'))
+
+    # Find the heading to the closest point on the coastline
+    closest_point_on_coastline = closest_shoreline(wp1)
+    heading_to_shore = get_bearing(wp1.y, wp1.x, closest_point_on_coastline.y, closest_point_on_coastline.x)
+
+    # Offset?
+
+    if along_heading is None:
+        along_heading = heading_to_shore - 90.
+        along_heading = trunc_heading(along_heading)
+    else:
+        heading_to_shore = along_heading + 90.
+        heading_to_shore = trunc_heading(heading_to_shore) 
+    back_heading = trunc_heading(along_heading + 180)
+
+    print(f"Heading to shore: {heading_to_shore:.2f} degrees")
+    print(f"Along heading: {along_heading:.2f} degrees")
+
+    wps = [wp1] if not skip_wp1 else []
+
+    wps.append(get_destination_point(wp1, along_heading, line_length/2.))
+
+    # Next line, 70m off-shore
+    off_heading = trunc_heading(heading_to_shore+180)
+
+    wps.append(get_destination_point(wps[-1], off_heading, off_line))
+    wps.append(get_destination_point(wps[-1], back_heading, line_length))
+
+    # Next lines
+    nlines = int(np.round(grid_width/off_line))
+    along = True
+    for i in range(nlines-2):
+        wps.append(get_destination_point(wps[-1], off_heading, off_line))
+        if along:
+            wps.append(get_destination_point(wps[-1], along_heading, line_length))
+        else:
+            wps.append(get_destination_point(wps[-1], back_heading, line_length))
+        along = not along
+
+
+    # Show
+    if plot:
+        plot_flight_plan(wps, f'{plan_name}.png', 
+                         closest_shore=closest_point_on_coastline,
+                         **kwargs)
+
+    wps_gdf = geopandas.GeoDataFrame(geometry=wps, crs="EPSG:4326")
+    # Write to file
+    wps_gdf.to_file(f'{plan_name}.shp')
+
+    # Write to KML
+    wps_gdf.to_file(f'{plan_name}.kml', driver='KML')
+
+    # Write to CSV as lat lon
+    wps_gdf['lon'] = wps_gdf.geometry.x
+    wps_gdf['lat'] = wps_gdf.geometry.y
+    wps_gdf['Waypoint'] = [f'WP{i:03d}' for i in np.arange(len(wps_gdf))]
+    wps_gdf[['Waypoint', 'lon', 'lat']].to_csv(f'{plan_name}.csv', index=False)
+
+def main(flg:int):
+
+
+    if flg == 0:
+        # Generate flight plan for Specim flight
+        flight_plan(plot=True)
+    elif flg == 1:
+        # Generate flight plan for Black Swift
+        flight_plan(grid_width=10., line_length=10., plot=True, plan_name='blacksmith')
+    elif flg == 2:  
+        # Generate flight plan for Simons proposal
+        flight_plan(grid_width=30., line_length=18., plot=True,  off_line=1.,
+                    plan_name='simons', along_heading=144.+180,
+                    skip_wp1=True, show_M1=True,
+                    big_only=True, lon_lim=(-122.2, -121.5), 
+                    lat_lim=(36.5, 37.05))
+
+# Command line execution
+if __name__ == '__main__':
+    import sys
+
+    if len(sys.argv) > 1:
+        flg = int(sys.argv[1])
+    else:
+        flg = 0
+    main(flg)
